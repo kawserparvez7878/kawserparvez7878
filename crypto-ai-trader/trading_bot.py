@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-AI-Powered Cryptocurrency Trading Bot
-Author: kawser parvez
-Email: kawserparvez7878@gmail.com
-Description: 24/7 automated crypto trading bot with ML predictions and Telegram alerts
+AI Crypto Trading Bot - Main Engine
+Author: kawser parvez | kawserparvez7878@gmail.com
+Description: 24/7 AI-powered cryptocurrency trading bot with Binance API,
+             technical analysis, ML predictions, and Telegram notifications.
 """
 
 import time
 import logging
 import asyncio
 from datetime import datetime
+import pandas as pd
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from config import (
@@ -24,15 +25,14 @@ from telegram_handler import TelegramHandler
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('trading_bot.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler('trading_bot.log'), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
 
 class CryptoTradingBot:
+    """Main AI-powered cryptocurrency trading bot."""
+
     def __init__(self):
         logger.info("Initializing AI Crypto Trading Bot...")
         self.client = Client(BINANCE_API_KEY, BINANCE_SECRET_KEY)
@@ -46,7 +46,6 @@ class CryptoTradingBot:
 
     def get_historical_data(self, symbol, interval='1h', limit=500):
         try:
-            import pandas as pd
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
             df = pd.DataFrame(klines, columns=[
                 'timestamp','open','high','low','close','volume',
@@ -63,16 +62,14 @@ class CryptoTradingBot:
 
     def get_current_price(self, symbol):
         try:
-            ticker = self.client.get_symbol_ticker(symbol=symbol)
-            return float(ticker['price'])
+            return float(self.client.get_symbol_ticker(symbol=symbol)['price'])
         except BinanceAPIException as e:
             logger.error(f"Error fetching price for {symbol}: {e}")
             return None
 
     def get_account_balance(self, asset='USDT'):
         try:
-            balance = self.client.get_asset_balance(asset=asset)
-            return float(balance['free'])
+            return float(self.client.get_asset_balance(asset=asset)['free'])
         except BinanceAPIException as e:
             logger.error(f"Error fetching balance: {e}")
             return 0.0
@@ -83,125 +80,107 @@ class CryptoTradingBot:
             logger.info(f"Order placed: {side} {quantity} {symbol}")
             return order
         except BinanceAPIException as e:
-            logger.error(f"Order error for {symbol}: {e}")
+            logger.error(f"Error placing order for {symbol}: {e}")
             return None
 
     def analyze_market(self, symbol):
-        logger.info(f"Analyzing {symbol}...")
-        df = self.get_historical_data(symbol)
+        logger.info(f"Analyzing market for {symbol}...")
+        df = self.get_historical_data(symbol, interval='1h', limit=200)
         if df is None or len(df) < 50:
             return None
         ta_signals = self.ta.generate_signals(df)
         ml_prediction = self.ml_model.predict(df)
         current_price = self.get_current_price(symbol)
-        recommendation = self._generate_recommendation(ta_signals, ml_prediction)
+        final_signal = self.combine_signals(ta_signals, ml_prediction)
         return {
-            'symbol': symbol,
-            'current_price': current_price,
-            'timestamp': datetime.now().isoformat(),
-            'ta_signals': ta_signals,
-            'ml_prediction': ml_prediction,
-            'recommendation': recommendation
+            'symbol': symbol, 'current_price': current_price,
+            'ta_signals': ta_signals, 'ml_prediction': ml_prediction,
+            'final_signal': final_signal, 'timestamp': datetime.now().isoformat()
         }
 
-    def _generate_recommendation(self, ta_signals, ml_prediction):
-        buy_signals = sell_signals = 0
-        if ta_signals:
-            for key in ['ma_signal','rsi_signal','macd_signal']:
-                if ta_signals.get(key) == 'BUY': buy_signals += 1
-                elif ta_signals.get(key) == 'SELL': sell_signals += 1
-        if ml_prediction:
-            if ml_prediction.get('signal') == 'BUY': buy_signals += 2
-            elif ml_prediction.get('signal') == 'SELL': sell_signals += 2
-        if buy_signals > sell_signals and buy_signals >= 3: return 'STRONG_BUY'
-        elif buy_signals > sell_signals: return 'BUY'
-        elif sell_signals > buy_signals and sell_signals >= 3: return 'STRONG_SELL'
-        elif sell_signals > buy_signals: return 'SELL'
-        else: return 'HOLD'
+    def combine_signals(self, ta_signals, ml_prediction):
+        score = 0
+        if ta_signals.get('ma_signal') == 'BUY': score += 1
+        elif ta_signals.get('ma_signal') == 'SELL': score -= 1
+        if ta_signals.get('rsi_signal') == 'BUY': score += 1
+        elif ta_signals.get('rsi_signal') == 'SELL': score -= 1
+        if ta_signals.get('macd_signal') == 'BUY': score += 1
+        elif ta_signals.get('macd_signal') == 'SELL': score -= 1
+        if ml_prediction.get('direction') == 'UP' and ml_prediction.get('confidence', 0) > 0.6: score += 2
+        elif ml_prediction.get('direction') == 'DOWN' and ml_prediction.get('confidence', 0) > 0.6: score -= 2
+        if score >= 3: return 'STRONG_BUY'
+        elif score >= 1: return 'BUY'
+        elif score <= -3: return 'STRONG_SELL'
+        elif score <= -1: return 'SELL'
+        return 'HOLD'
 
-    def execute_trade(self, symbol, recommendation, current_price):
-        if recommendation in ['BUY','STRONG_BUY']:
-            balance = self.get_account_balance('USDT')
-            if balance > 10:
-                quantity = round((balance * TRADE_QUANTITY) / current_price, 6)
-                order = self.place_order(symbol, 'BUY', quantity)
+    def execute_trade(self, analysis):
+        symbol, signal, price = analysis['symbol'], analysis['final_signal'], analysis['current_price']
+        if signal in ['BUY','STRONG_BUY'] and symbol not in self.active_trades:
+            if self.get_account_balance('USDT') > 10:
+                order = self.place_order(symbol, 'BUY', TRADE_QUANTITY)
                 if order:
-                    self.active_trades[symbol] = {
-                        'entry_price': current_price, 'quantity': quantity,
-                        'stop_loss': current_price * (1 - STOP_LOSS_PERCENT/100),
-                        'take_profit': current_price * (1 + TAKE_PROFIT_PERCENT/100),
-                        'order_id': order['orderId'], 'timestamp': datetime.now().isoformat()
-                    }
-                    return order
-        elif recommendation in ['SELL','STRONG_SELL']:
-            if symbol in self.active_trades:
-                trade = self.active_trades[symbol]
-                order = self.place_order(symbol, 'SELL', trade['quantity'])
-                if order:
-                    profit = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                    self.trade_history.append({'symbol': symbol, 'entry_price': trade['entry_price'],
-                        'exit_price': current_price, 'profit_percent': profit,
-                        'timestamp': datetime.now().isoformat()})
+                    self.active_trades[symbol] = {'entry_price': price, 'quantity': TRADE_QUANTITY,
+                        'order_id': order['orderId'], 'timestamp': datetime.now().isoformat()}
+                    asyncio.run(self.telegram.send_trade_signal(symbol, 'BUY', price, TRADE_QUANTITY, analysis))
+        elif signal in ['SELL','STRONG_SELL'] and symbol in self.active_trades:
+            trade = self.active_trades[symbol]
+            order = self.place_order(symbol, 'SELL', trade['quantity'])
+            if order:
+                profit = (price - trade['entry_price']) * trade['quantity']
+                self.trade_history.append({'symbol': symbol, 'entry_price': trade['entry_price'],
+                    'exit_price': price, 'profit': profit, 'timestamp': datetime.now().isoformat()})
+                del self.active_trades[symbol]
+                asyncio.run(self.telegram.send_trade_signal(symbol, 'SELL', price, trade['quantity'], analysis))
+
+    def check_stop_loss_take_profit(self):
+        for symbol, trade in list(self.active_trades.items()):
+            price = self.get_current_price(symbol)
+            if not price: continue
+            change = (price - trade['entry_price']) / trade['entry_price'] * 100
+            if change <= -STOP_LOSS_PERCENT:
+                if self.place_order(symbol, 'SELL', trade['quantity']):
                     del self.active_trades[symbol]
-                    return order
-        return None
-
-    def check_stop_loss_take_profit(self, symbol, current_price):
-        if symbol not in self.active_trades: return
-        trade = self.active_trades[symbol]
-        if current_price <= trade['stop_loss']:
-            order = self.place_order(symbol, 'SELL', trade['quantity'])
-            if order:
-                loss = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                asyncio.run(self.telegram.send_alert(f"STOP-LOSS triggered for {symbol}\nLoss: {loss:.2f}%"))
-                del self.active_trades[symbol]
-        elif current_price >= trade['take_profit']:
-            order = self.place_order(symbol, 'SELL', trade['quantity'])
-            if order:
-                profit = (current_price - trade['entry_price']) / trade['entry_price'] * 100
-                asyncio.run(self.telegram.send_alert(f"TAKE-PROFIT triggered for {symbol}\nProfit: +{profit:.2f}%"))
-                del self.active_trades[symbol]
+                    asyncio.run(self.telegram.send_alert(f"STOP-LOSS: {symbol} | Loss: {change:.2f}%"))
+            elif change >= TAKE_PROFIT_PERCENT:
+                if self.place_order(symbol, 'SELL', trade['quantity']):
+                    del self.active_trades[symbol]
+                    asyncio.run(self.telegram.send_alert(f"TAKE-PROFIT: {symbol} | Profit: {change:.2f}%"))
 
     def generate_performance_report(self):
-        if not self.trade_history: return "No completed trades yet."
-        total = len(self.trade_history)
-        profitable = sum(1 for t in self.trade_history if t['profit_percent'] > 0)
-        total_profit = sum(t['profit_percent'] for t in self.trade_history)
-        return (f"Performance Report\nTotal Trades: {total}\nProfitable: {profitable}\n"
-                f"Win Rate: {profitable/total*100:.1f}%\nTotal P&L: {total_profit:.2f}%\n"
-                f"Active Positions: {len(self.active_trades)}")
+        if not self.trade_history:
+            return {'message': 'No completed trades yet.'}
+        total_profit = sum(t['profit'] for t in self.trade_history)
+        winning = [t for t in self.trade_history if t['profit'] > 0]
+        win_rate = len(winning) / len(self.trade_history) * 100
+        return {
+            'total_trades': len(self.trade_history), 'winning_trades': len(winning),
+            'losing_trades': len(self.trade_history) - len(winning),
+            'win_rate': f"{win_rate:.2f}%", 'total_profit': f"${total_profit:.2f}",
+            'active_trades': len(self.active_trades)
+        }
 
     def run(self):
         self.is_running = True
-        logger.info("Starting AI Crypto Trading Bot - 24/7 monitoring active")
-        asyncio.run(self.telegram.send_alert(f"AI Crypto Trading Bot Started! Monitoring {len(TRADING_PAIRS)} pairs."))
-        report_counter = 0
+        logger.info("Starting AI Crypto Trading Bot - 24/7 monitoring active!")
+        asyncio.run(self.telegram.send_alert(
+            f"AI Crypto Trading Bot Started!\nMonitoring: {', '.join(TRADING_PAIRS)}\n24/7 active."
+        ))
+        cycle = 0
         while self.is_running:
             try:
+                cycle += 1
+                logger.info(f"--- Cycle #{cycle} ---")
                 for symbol in TRADING_PAIRS:
                     analysis = self.analyze_market(symbol)
-                    if analysis is None: continue
-                    current_price = analysis['current_price']
-                    recommendation = analysis['recommendation']
-                    logger.info(f"{symbol}: ${current_price:.4f} -> {recommendation}")
-                    self.check_stop_loss_take_profit(symbol, current_price)
-                    if recommendation in ['BUY','STRONG_BUY','SELL','STRONG_SELL']:
-                        ta = analysis['ta_signals']
-                        ml = analysis['ml_prediction']
-                        msg = (f"{recommendation} Signal: {symbol}\nPrice: ${current_price:.4f}\n"
-                               f"MA: {ta.get('ma_signal','N/A')} | RSI: {ta.get('rsi_value',0):.1f}\n"
-                               f"MACD: {ta.get('macd_signal','N/A')} | ML: {ml.get('signal','N/A')} ({ml.get('confidence',0):.1f}%)")
-                        asyncio.run(self.telegram.send_alert(msg))
-                        self.execute_trade(symbol, recommendation, current_price)
-                    time.sleep(1)
-                report_counter += 1
-                if report_counter >= (3600 / CHECK_INTERVAL):
-                    asyncio.run(self.telegram.send_alert(self.generate_performance_report()))
-                    report_counter = 0
+                    if analysis: self.execute_trade(analysis)
+                self.check_stop_loss_take_profit()
+                if cycle % 24 == 0:
+                    asyncio.run(self.telegram.send_performance_report(self.generate_performance_report()))
                 time.sleep(CHECK_INTERVAL)
             except KeyboardInterrupt:
                 self.is_running = False
-                asyncio.run(self.telegram.send_alert("Trading bot stopped."))
+                asyncio.run(self.telegram.send_alert("Bot stopped."))
                 break
             except Exception as e:
                 logger.error(f"Error: {e}")
@@ -209,5 +188,4 @@ class CryptoTradingBot:
 
 
 if __name__ == '__main__':
-    bot = CryptoTradingBot()
-    bot.run()
+    CryptoTradingBot().run()
