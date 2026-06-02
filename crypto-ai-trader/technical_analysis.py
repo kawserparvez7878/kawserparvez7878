@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Technical Analysis Module
-Author: kawser parvez
-Indicators: Moving Average, RSI, MACD, Bollinger Bands, Stochastic
+Technical Analysis - Indicators & Signal Generation
+Author: kawser parvez | kawserparvez7878@gmail.com
+Description: Moving Average, RSI, MACD calculations and trading signal logic.
 """
 
 import numpy as np
 import pandas as pd
 import logging
 from config import (
-    MA_SHORT_PERIOD, MA_LONG_PERIOD,
-    RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD,
+    MA_SHORT, MA_LONG, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD,
     MACD_FAST, MACD_SLOW, MACD_SIGNAL
 )
 
@@ -20,212 +19,235 @@ logger = logging.getLogger(__name__)
 class TechnicalAnalysis:
     """Technical analysis indicators and signal generation."""
 
-    def calculate_moving_averages(self, df):
-        """Calculate Simple and Exponential Moving Averages."""
-        df = df.copy()
-        df['SMA_short'] = df['close'].rolling(window=MA_SHORT_PERIOD).mean()
-        df['SMA_long'] = df['close'].rolling(window=MA_LONG_PERIOD).mean()
-        df['EMA_short'] = df['close'].ewm(span=MA_SHORT_PERIOD, adjust=False).mean()
-        df['EMA_long'] = df['close'].ewm(span=MA_LONG_PERIOD, adjust=False).mean()
-        return df
+    # ─────────────────────────────────────────────
+    # Moving Averages
+    # ─────────────────────────────────────────────
 
-    def calculate_rsi(self, df, period=None):
-        """Calculate Relative Strength Index."""
-        if period is None:
-            period = RSI_PERIOD
-        df = df.copy()
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0.0)
-        loss = -delta.where(delta < 0, 0.0)
+    def calculate_sma(self, series: pd.Series, period: int) -> pd.Series:
+        """Simple Moving Average."""
+        return series.rolling(window=period).mean()
+
+    def calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
+        """Exponential Moving Average."""
+        return series.ewm(span=period, adjust=False).mean()
+
+    def calculate_wma(self, series: pd.Series, period: int) -> pd.Series:
+        """Weighted Moving Average."""
+        weights = np.arange(1, period + 1)
+        return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+    def ma_signal(self, df: pd.DataFrame) -> dict:
+        """Generate MA crossover signal."""
+        close = df['close']
+        short_ma = self.calculate_ema(close, MA_SHORT)
+        long_ma = self.calculate_ema(close, MA_LONG)
+        sma_50 = self.calculate_sma(close, 50)
+        sma_200 = self.calculate_sma(close, 200)
+
+        current_short = short_ma.iloc[-1]
+        current_long = long_ma.iloc[-1]
+        prev_short = short_ma.iloc[-2]
+        prev_long = long_ma.iloc[-2]
+        current_price = close.iloc[-1]
+
+        # Golden/Death cross detection
+        golden_cross = prev_short <= prev_long and current_short > current_long
+        death_cross = prev_short >= prev_long and current_short < current_long
+
+        if golden_cross or (current_short > current_long and current_price > sma_50.iloc[-1]):
+            signal = 'BUY'
+        elif death_cross or (current_short < current_long and current_price < sma_50.iloc[-1]):
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
+
+        return {
+            'signal': signal,
+            'short_ma': float(current_short),
+            'long_ma': float(current_long),
+            'sma_50': float(sma_50.iloc[-1]) if not pd.isna(sma_50.iloc[-1]) else None,
+            'sma_200': float(sma_200.iloc[-1]) if not pd.isna(sma_200.iloc[-1]) else None,
+            'golden_cross': golden_cross,
+            'death_cross': death_cross
+        }
+
+    # ─────────────────────────────────────────────
+    # RSI
+    # ─────────────────────────────────────────────
+
+    def calculate_rsi(self, series: pd.Series, period: int = 14) -> pd.Series:
+        """Relative Strength Index."""
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
         avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
         avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
         rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        return df
+        return 100 - (100 / (1 + rs))
 
-    def calculate_macd(self, df):
-        """Calculate MACD (Moving Average Convergence Divergence)."""
-        df = df.copy()
-        ema_fast = df['close'].ewm(span=MACD_FAST, adjust=False).mean()
-        ema_slow = df['close'].ewm(span=MACD_SLOW, adjust=False).mean()
-        df['MACD'] = ema_fast - ema_slow
-        df['MACD_signal'] = df['MACD'].ewm(span=MACD_SIGNAL, adjust=False).mean()
-        df['MACD_histogram'] = df['MACD'] - df['MACD_signal']
-        return df
+    def rsi_signal(self, df: pd.DataFrame) -> dict:
+        """Generate RSI-based trading signal."""
+        rsi = self.calculate_rsi(df['close'], RSI_PERIOD)
+        current_rsi = rsi.iloc[-1]
+        prev_rsi = rsi.iloc[-2]
 
-    def calculate_bollinger_bands(self, df, period=20, std_dev=2):
-        """Calculate Bollinger Bands."""
-        df = df.copy()
-        df['BB_middle'] = df['close'].rolling(window=period).mean()
-        bb_std = df['close'].rolling(window=period).std()
-        df['BB_upper'] = df['BB_middle'] + (bb_std * std_dev)
-        df['BB_lower'] = df['BB_middle'] - (bb_std * std_dev)
-        df['BB_width'] = (df['BB_upper'] - df['BB_lower']) / df['BB_middle']
-        df['BB_position'] = (df['close'] - df['BB_lower']) / (df['BB_upper'] - df['BB_lower'])
-        return df
+        if current_rsi < RSI_OVERSOLD:
+            signal = 'BUY'
+        elif current_rsi > RSI_OVERBOUGHT:
+            signal = 'SELL'
+        elif prev_rsi < RSI_OVERSOLD and current_rsi >= RSI_OVERSOLD:
+            signal = 'BUY'   # RSI recovering from oversold
+        elif prev_rsi > RSI_OVERBOUGHT and current_rsi <= RSI_OVERBOUGHT:
+            signal = 'SELL'  # RSI falling from overbought
+        else:
+            signal = 'HOLD'
 
-    def calculate_stochastic(self, df, k_period=14, d_period=3):
-        """Calculate Stochastic Oscillator."""
-        df = df.copy()
-        low_min = df['low'].rolling(window=k_period).min()
-        high_max = df['high'].rolling(window=k_period).max()
-        df['Stoch_K'] = 100 * (df['close'] - low_min) / (high_max - low_min)
-        df['Stoch_D'] = df['Stoch_K'].rolling(window=d_period).mean()
-        return df
+        return {
+            'signal': signal,
+            'rsi': float(current_rsi),
+            'overbought': RSI_OVERBOUGHT,
+            'oversold': RSI_OVERSOLD
+        }
 
-    def calculate_atr(self, df, period=14):
-        """Calculate Average True Range (volatility indicator)."""
-        df = df.copy()
-        df['TR'] = np.maximum(
-            df['high'] - df['low'],
-            np.maximum(
-                abs(df['high'] - df['close'].shift(1)),
-                abs(df['low'] - df['close'].shift(1))
-            )
-        )
-        df['ATR'] = df['TR'].rolling(window=period).mean()
-        return df
+    # ─────────────────────────────────────────────
+    # MACD
+    # ─────────────────────────────────────────────
 
-    def calculate_volume_indicators(self, df):
-        """Calculate volume-based indicators."""
-        df = df.copy()
-        df['Volume_MA'] = df['volume'].rolling(window=20).mean()
-        df['Volume_ratio'] = df['volume'] / df['Volume_MA']
-        # On-Balance Volume
-        df['OBV'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
-        return df
+    def calculate_macd(self, series: pd.Series):
+        """MACD line, signal line, and histogram."""
+        ema_fast = self.calculate_ema(series, MACD_FAST)
+        ema_slow = self.calculate_ema(series, MACD_SLOW)
+        macd_line = ema_fast - ema_slow
+        signal_line = self.calculate_ema(macd_line, MACD_SIGNAL)
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
 
-    def get_ma_signal(self, df):
-        """Generate Moving Average crossover signal."""
-        if len(df) < MA_LONG_PERIOD + 2:
-            return 'HOLD', None, None
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        sma_short = last.get('SMA_short', np.nan)
-        sma_long = last.get('SMA_long', np.nan)
-        prev_sma_short = prev.get('SMA_short', np.nan)
-        prev_sma_long = prev.get('SMA_long', np.nan)
-        if pd.isna(sma_short) or pd.isna(sma_long):
-            return 'HOLD', sma_short, sma_long
-        # Golden cross: short MA crosses above long MA
-        if sma_short > sma_long and prev_sma_short <= prev_sma_long:
-            return 'BUY', sma_short, sma_long
-        # Death cross: short MA crosses below long MA
-        elif sma_short < sma_long and prev_sma_short >= prev_sma_long:
-            return 'SELL', sma_short, sma_long
-        elif sma_short > sma_long:
-            return 'BUY', sma_short, sma_long
-        elif sma_short < sma_long:
-            return 'SELL', sma_short, sma_long
-        return 'HOLD', sma_short, sma_long
+    def macd_signal(self, df: pd.DataFrame) -> dict:
+        """Generate MACD-based trading signal."""
+        macd_line, signal_line, histogram = self.calculate_macd(df['close'])
 
-    def get_rsi_signal(self, df):
-        """Generate RSI-based signal."""
-        if 'RSI' not in df.columns or df['RSI'].isna().all():
-            return 'HOLD', 50
-        rsi_value = df['RSI'].iloc[-1]
-        if pd.isna(rsi_value):
-            return 'HOLD', 50
-        if rsi_value < RSI_OVERSOLD:
-            return 'BUY', rsi_value
-        elif rsi_value > RSI_OVERBOUGHT:
-            return 'SELL', rsi_value
-        return 'HOLD', rsi_value
+        curr_macd = macd_line.iloc[-1]
+        curr_signal = signal_line.iloc[-1]
+        curr_hist = histogram.iloc[-1]
+        prev_macd = macd_line.iloc[-2]
+        prev_signal = signal_line.iloc[-2]
+        prev_hist = histogram.iloc[-2]
 
-    def get_macd_signal(self, df):
-        """Generate MACD-based signal."""
-        if 'MACD' not in df.columns or len(df) < 2:
-            return 'HOLD', 0, 0
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        macd = last.get('MACD', np.nan)
-        macd_sig = last.get('MACD_signal', np.nan)
-        prev_macd = prev.get('MACD', np.nan)
-        prev_sig = prev.get('MACD_signal', np.nan)
-        if pd.isna(macd) or pd.isna(macd_sig):
-            return 'HOLD', 0, 0
         # Bullish crossover
-        if macd > macd_sig and prev_macd <= prev_sig:
-            return 'BUY', macd, macd_sig
+        bullish_cross = prev_macd <= prev_signal and curr_macd > curr_signal
         # Bearish crossover
-        elif macd < macd_sig and prev_macd >= prev_sig:
-            return 'SELL', macd, macd_sig
-        elif macd > macd_sig:
-            return 'BUY', macd, macd_sig
-        elif macd < macd_sig:
-            return 'SELL', macd, macd_sig
-        return 'HOLD', macd, macd_sig
+        bearish_cross = prev_macd >= prev_signal and curr_macd < curr_signal
+        # Histogram momentum
+        hist_increasing = curr_hist > prev_hist
 
-    def get_bollinger_signal(self, df):
+        if bullish_cross or (curr_macd > curr_signal and hist_increasing and curr_macd > 0):
+            signal = 'BUY'
+        elif bearish_cross or (curr_macd < curr_signal and not hist_increasing and curr_macd < 0):
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
+
+        return {
+            'signal': signal,
+            'macd': float(curr_macd),
+            'signal_line': float(curr_signal),
+            'histogram': float(curr_hist),
+            'bullish_cross': bullish_cross,
+            'bearish_cross': bearish_cross
+        }
+
+    # ─────────────────────────────────────────────
+    # Bollinger Bands
+    # ─────────────────────────────────────────────
+
+    def calculate_bollinger_bands(self, series: pd.Series, period: int = 20, std_dev: float = 2.0):
+        """Bollinger Bands: upper, middle, lower."""
+        middle = series.rolling(period).mean()
+        std = series.rolling(period).std()
+        upper = middle + std_dev * std
+        lower = middle - std_dev * std
+        return upper, middle, lower
+
+    def bollinger_signal(self, df: pd.DataFrame) -> dict:
         """Generate Bollinger Bands signal."""
-        if 'BB_position' not in df.columns:
-            return 'HOLD'
-        bb_pos = df['BB_position'].iloc[-1]
-        if pd.isna(bb_pos):
-            return 'HOLD'
-        if bb_pos < 0.1:
-            return 'BUY'   # Price near lower band - oversold
-        elif bb_pos > 0.9:
-            return 'SELL'  # Price near upper band - overbought
-        return 'HOLD'
+        upper, middle, lower = self.calculate_bollinger_bands(df['close'])
+        price = df['close'].iloc[-1]
+        if price <= lower.iloc[-1]:
+            signal = 'BUY'
+        elif price >= upper.iloc[-1]:
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
+        return {
+            'signal': signal,
+            'upper': float(upper.iloc[-1]),
+            'middle': float(middle.iloc[-1]),
+            'lower': float(lower.iloc[-1]),
+            'price': float(price)
+        }
 
-    def generate_signals(self, df):
-        """Generate comprehensive trading signals from all indicators."""
+    # ─────────────────────────────────────────────
+    # Volume Analysis
+    # ─────────────────────────────────────────────
+
+    def volume_analysis(self, df: pd.DataFrame) -> dict:
+        """Analyse volume trends."""
+        vol = df['volume']
+        vol_ma = vol.rolling(20).mean()
+        vol_ratio = vol.iloc[-1] / vol_ma.iloc[-1] if vol_ma.iloc[-1] > 0 else 1.0
+        price_change = df['close'].pct_change().iloc[-1]
+        if vol_ratio > 1.5 and price_change > 0:
+            signal = 'BUY'
+        elif vol_ratio > 1.5 and price_change < 0:
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
+        return {'signal': signal, 'volume_ratio': float(vol_ratio),
+                'current_volume': float(vol.iloc[-1]), 'avg_volume': float(vol_ma.iloc[-1])}
+
+    # ─────────────────────────────────────────────
+    # Aggregate Signal Generator
+    # ─────────────────────────────────────────────
+
+    def generate_signals(self, df: pd.DataFrame) -> dict:
+        """Generate all technical analysis signals."""
         try:
-            # Calculate all indicators
-            df = self.calculate_moving_averages(df)
-            df = self.calculate_rsi(df)
-            df = self.calculate_macd(df)
-            df = self.calculate_bollinger_bands(df)
-            df = self.calculate_stochastic(df)
-            df = self.calculate_atr(df)
-            df = self.calculate_volume_indicators(df)
+            ma = self.ma_signal(df)
+            rsi = self.rsi_signal(df)
+            macd = self.macd_signal(df)
+            bb = self.bollinger_signal(df)
+            vol = self.volume_analysis(df)
 
-            # Get individual signals
-            ma_signal, sma_short, sma_long = self.get_ma_signal(df)
-            rsi_signal, rsi_value = self.get_rsi_signal(df)
-            macd_signal, macd_val, macd_sig_val = self.get_macd_signal(df)
-            bb_signal = self.get_bollinger_signal(df)
-
-            # Get latest values
-            last = df.iloc[-1]
-
-            signals = {
-                'ma_signal': ma_signal,
-                'sma_short': float(sma_short) if sma_short and not pd.isna(sma_short) else None,
-                'sma_long': float(sma_long) if sma_long and not pd.isna(sma_long) else None,
-                'rsi_signal': rsi_signal,
-                'rsi_value': float(rsi_value),
-                'macd_signal': macd_signal,
-                'macd_value': float(macd_val),
-                'macd_signal_line': float(macd_sig_val),
-                'macd_histogram': float(last.get('MACD_histogram', 0) or 0),
-                'bb_signal': bb_signal,
-                'bb_upper': float(last.get('BB_upper', 0) or 0),
-                'bb_lower': float(last.get('BB_lower', 0) or 0),
-                'bb_position': float(last.get('BB_position', 0.5) or 0.5),
-                'atr': float(last.get('ATR', 0) or 0),
-                'volume_ratio': float(last.get('Volume_ratio', 1) or 1),
-                'stoch_k': float(last.get('Stoch_K', 50) or 50),
-                'stoch_d': float(last.get('Stoch_D', 50) or 50),
+            return {
+                'ma_signal': ma['signal'],
+                'rsi_signal': rsi['signal'],
+                'macd_signal': macd['signal'],
+                'bb_signal': bb['signal'],
+                'volume_signal': vol['signal'],
+                'ma_details': ma,
+                'rsi_details': rsi,
+                'macd_details': macd,
+                'bb_details': bb,
+                'volume_details': vol
             }
-
-            # Overall signal strength
-            buy_count = sum(1 for s in [ma_signal, rsi_signal, macd_signal, bb_signal] if s == 'BUY')
-            sell_count = sum(1 for s in [ma_signal, rsi_signal, macd_signal, bb_signal] if s == 'SELL')
-            signals['buy_count'] = buy_count
-            signals['sell_count'] = sell_count
-            signals['signal_strength'] = (buy_count - sell_count) / 4 * 100
-
-            logger.debug(f"Signals generated: MA={ma_signal}, RSI={rsi_signal}, MACD={macd_signal}, BB={bb_signal}")
-            return signals
-
         except Exception as e:
             logger.error(f"Error generating signals: {e}")
             return {
                 'ma_signal': 'HOLD', 'rsi_signal': 'HOLD',
-                'macd_signal': 'HOLD', 'bb_signal': 'HOLD',
-                'rsi_value': 50, 'macd_value': 0, 'macd_signal_line': 0,
-                'macd_histogram': 0, 'atr': 0, 'volume_ratio': 1,
-                'buy_count': 0, 'sell_count': 0, 'signal_strength': 0
+                'macd_signal': 'HOLD', 'bb_signal': 'HOLD', 'volume_signal': 'HOLD'
             }
+
+    def get_market_summary(self, df: pd.DataFrame) -> str:
+        """Return a human-readable market summary."""
+        signals = self.generate_signals(df)
+        rsi_val = signals['rsi_details'].get('rsi', 'N/A')
+        macd_val = signals['macd_details'].get('macd', 'N/A')
+        price = df['close'].iloc[-1]
+        return (
+            f"Price: ${price:.4f} | "
+            f"MA: {signals['ma_signal']} | "
+            f"RSI: {rsi_val:.1f} ({signals['rsi_signal']}) | "
+            f"MACD: {macd_val:.4f} ({signals['macd_signal']}) | "
+            f"BB: {signals['bb_signal']} | "
+            f"Vol: {signals['volume_signal']}"
+        )
